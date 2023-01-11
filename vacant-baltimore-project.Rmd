@@ -1,0 +1,473 @@
+---
+title: "Vacant & Abandoned Homes in Baltimore"
+author: "Jess Spayd"
+date: "Fall 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(car)
+library(stargazer)
+library(sandwich)
+library(lmtest)
+library(outliers)
+library(rgdal)
+library(broom)
+library(mapproj)
+library(sp)
+library(maps)
+library(geojsonio)
+
+## import dataset
+setwd("~/Documents/programming/GitHub/vacant-homes-baltimore/data")
+full_dataset_2020 <- read_csv('full_dataset_2020.csv')
+
+# df of only Baltimore City row
+city_averages <- subset(full_dataset_2020, Community == 'Baltimore City')
+city_averages <- subset(city_averages, select = -c(Community))
+
+# df without Baltimory City row
+communities <- subset(full_dataset_2020, Community != 'Baltimore City')
+# remove community (discrete) variable
+communities_num <- subset(communities, select = -c(Community))
+
+```
+
+
+### Executive Summary
+
+The purpose of this analysis was to understand the factors that lead to a higher prevalence of vacant homes in Baltimore City neighborhoods. Baltimore has consistently had about 8% vacant homes across the city. With declining population and fewer homeowners residing in the city, Baltimore has reason to explore housing conditions. This exploratory analysis targets a few potential predictors of vacant homes. Part 1 crime rates, cash residential sales, and the rate of owner-occupied homes were all statistically significant predictors of the vacant housing phenomenon.
+
+### Topic and Research Questions
+
+Vacant and abandoned homes are a pervasive issue in America’s large cities. As of 2022, Baltimore ranks 23rd for vacant residential properties out of the top 50 most populous cities in the United States, with approximately 8.76% of residential properties across the city classified as vacant and abandoned (Huisache, 2022). *Figure 1* shows the change in vacant and abandoned homes in Baltimore City from 2010 to 2020, which reached its lowest point in 2020 but stayed relatively stable over time.
+
+Vacant homes and their maintenance can have a huge impact on communities, in terms of health and economics (Miller & Kasakove, 2022). The prevalence of vacant homes are a predictor of overdose reports in Baltimore, and vacant homes may be a factor in the population decline Baltimore has seen, in particular with the decrease in owner-occupied homes over time (see Appendix E). Vacant homes are likely to have squatters, and dangerous conditions in these derelict homes have even resulted in the deaths of three firefighters in Baltimore (Condon & Opilo, 2022). In Baltimore, journalists have recently uncovered the failure of private investment companies to rehabilitate, maintain, and rent out these properties while preying on overseas investors (Fenton, 2022). In 2020, a mere 9.9% of vacants in Baltimore were owned by the city. This analysis will explore Baltimore City communities’ rates of vacant and abandoned homes and community characteristics that predict them, in hopes that there are steps the city government can take to tackle the root of the problem.
+
+```{r include=F}
+
+setwd("~/Documents/programming/GitHub/vacant-homes-baltimore/data/historical-vacant-homes")
+
+vacant_abandoned_timeseries <- read_csv("vacant_abandoned_allyrs.csv")
+vacant_abandoned_wide <- gather(vacant_abandoned_timeseries, 
+                                "year", "pct_vacant_abandoned", -1)
+vacant_abandoned_bmore <- subset(vacant_abandoned_wide, 
+                                 Community == "Baltimore City")
+vacant_abandoned_bmore$year <- as.integer(vacant_abandoned_bmore$year)
+```
+
+``` {r echo=F, warning=F}
+
+ggplot(vacant_abandoned_bmore, aes(x=year, y=pct_vacant_abandoned)) +
+  geom_line() +
+  geom_point() +
+  labs(title="Vacant & Abandoned Homes in Baltimore City",
+       x="Year",
+       y="Percent of Residential Properties")+
+  scale_x_continuous(breaks=seq(from=2010, to=2020, by=2)) +
+  ylim(7.5,8.5) +
+  theme_minimal()
+
+```
+
+*Figure 1*. In 2020, Baltimore hit its lowest percent of vacant homes in 10 years at 7.7%. However, as you can see by the small range of the y-axis, the percentage of vacant homes has been relatively stable since 2010 (7.7 to 8.2 percent).
+
+### Key Concepts and Variables
+The dependent variable of interest in this study is vacant and abandoned homes. Residential properties are classified by the Baltimore City Department of Housing as vacant and abandoned according to the following criteria: (1) “the property is not habitable and appears boarded up or open to the elements;” (2) “the property was designated as being vacant prior to the current year and still remains vacant;” or (3) “the property is a multi-family structure where all units are considered to be vacant” (BNIA-JFI, 2022). The Baltimore Neighborhood Indicators Alliance (BNIA) publishes community-level rates of vacant and abandoned homes as a percentage of all residential properties classified by the Baltimore City Department of Housing as vacant and abandoned. This is a direct measure of vacant and abandoned homes that uses clearly defined criteria, is determined by the city government, and is measured consistently each year. *Figure 2* is a geographical representation of the rate of vacant homes in each community statistical area (CSA) in Baltimore City.
+
+```{r echo=F, warning=F}
+
+wdpath="~/Documents/programming/GitHub/vacant-homes-baltimore/data"
+
+## Read shapefile
+
+setwd("~/Documents/programming/GitHub/vacant-homes-baltimore/data")
+
+bmore_csa_spdf <- readOGR(
+  dsn=paste0(wdpath, "/CSA/"),
+  layer="Community_Statistical_Areas__CSAs___Reference_Boundaries",
+  verbose=F
+)
+
+## Convert to dataframe with broom::tidy
+## *IMPORTANT* Specify region arg to preserve Community names
+
+bmore_csa_spdf_fortified <- tidy(bmore_csa_spdf, region="Community")
+
+## Create polygon labels
+
+csa_names <- aggregate(cbind(long, lat) ~ id, data=bmore_csa_spdf_fortified, 
+                       FUN=function(x)mean(range(x)))
+
+## Join map with data
+
+map_vacants <- bmore_csa_spdf_fortified %>%
+  left_join(. , communities, by=c("id"="Community"))
+
+## Map
+
+ggplot()+
+  geom_polygon(data=map_vacants, aes(x=long, y=lat, group=group, 
+                                   fill=vacant_abandoned))+
+  theme_void() +
+  geom_sf()+
+  labs(title= "Baltimore's Vacant and Abandoned Homes (2020)",
+       fill="Percent") +
+  theme(legend.position="right") +
+  scale_fill_gradient(high = "#24135F", low = "darkgoldenrod3",
+                      breaks=c(0, 10, 20, 30),
+                      labels=c(0, 10, 20, 30),
+                      limits=c(0, 32))
+
+
+```
+
+*Figure 2*. This map shows the CSAs in Baltimore City by their percentage of vacant and abandoned homes. The darker regions on this map have higher rates of vacants. The small gray square is the city jail and is not included in the dataset.
+
+**Part 1 crime rate** is one of the independent variables explored in this study. Part 1 crime includes homicide, rape, aggravated assault, robbery, burglary, larceny, and auto theft (BNIA-JFI, 2022). BNIA publishes community-level rates of Part 1 crime per 1,000 residents that are reported to the Police Department. Part 1 crime rate was used in lieu of other available statistics including violent crime rate, property crime rate, and shootings, in order to capture a more whole picture of crime in Baltimore’s CSAs. Of course, not all crimes are reported to the police, and this figure does not include white collar crimes nor petty crimes.
+
+Another independent variable explored is **residential sales made in cash**, which are more likely to be purchased by private investment firms (BNIA-JFI, 2022; Fenton, 2022). BNIA publishes the percentage of residential sales for cash at the community level, defined as: “the percent of homes and condominiums sold for cash out of all residential properties sold in a calendar year” (BNIA-JFI, 2022). This data is retrieved from RBIntel, Inc. which provides real time real estate data, market analytics and business intelligence (*RBI*).
+
+**Whether homes are occupied by their owners or by renters** is the third independent variable explored. BNIA publishes community-level rates of owner-occupied homes, retrieved from the Maryland State Department of Planning MDProperty View dataset (*Maryland Department of Planning*). This variable is defined as the “percentage of homeowners that are the principal residents of a particular residential property out of all residential properties” (BNIA-JFI, 2022). Some of the properties may have multiple housing units that are not included in the figures (BNIA-JFI, 2022).
+
+This analysis also includes four control variables representing socioeconomic factors, which generally enhanced the fitness of the regression models:
+
+1. median household income, from the 2020 Census: “the middle value of the incomes earned in the prior year by households within an area,” adjusted for inflation;
+
+2. percent population (25 and over) with a bachelor’s degree or above, from the 2020 Census: “the percentage of persons that have completed, graduated, or received a Bachelor's or an advanced degree;”
+
+3. unemployment rate, from the 2020 Census: “the percent of persons between the ages of 16 and 64 that are in the labor force (and are looking for work) but are not currently working;” and
+
+4. high school completion rate, from Baltimore City Public Schools: “the percentage of 12th graders in a school year that successfully completed high school out of all 12th graders within an area” (BNIA-JFI, 2022).
+
+Summary statistics for all of the included variables are shown in *Table 1*.
+
+``` {r echo=F}
+
+communities_num2 <- subset(communities_num, select =
+                             -c(employment,
+                                shootings, violent_crime, property_crime,
+                                no_hs_diploma, some_college))
+communities_num2 <- as.data.frame(communities_num2)
+
+communities_final <- select(communities_num2,
+                            bachelors_degree,
+                            cash_homesales,
+                            hs_completion,
+                            income,
+                            overdose_calls,
+                            owner_occupied,
+                            part1_crime,
+                            unemployment,
+                            vacant_abandoned,
+                            vacants_ownedby_city)
+
+community_names <- communities$Community
+rownames(communities_final) <- community_names
+communities_final <- rownames_to_column(communities_final, var = 'Community')
+
+stargazer(communities_final,
+          digits=1,
+          title = 'Table 1. Summary Statistics',
+          type='text')
+
+```
+
+*Table 1*. Summary statistics for all variables used in the analyses.
+
+### Hypothesis and Theoretical Rationale
+This study is exploratory and therefore there is no formal hypothesis. The dependent variable of interest is the rate of vacant and abandoned homes in Baltimore. A number of potential relationships will be explored with the wealth of available data. I expect crime rates, socioeconomic factors, and housing market characteristics to be predictors of vacant and abandoned homes. Crime may be a driver of folks abandoning homes, while the housing market is likely to shed some light on how homes came to be vacant. Socioeconomic factors like income, education, and employment may be related to the community resources available to maintain, rehabilitate and reoccupy homes.
+
+### Methods and Data Sources
+**Data source**. The Baltimore Neighborhood Indicators Alliance (BNIA) provides community-level data for Baltimore’s community statistical areas (CSAs) in a wide breadth of categories including housing, crime, Census demographics, education, health, and workforce and economic development. The data used for this analysis includes variables from across those topics from 2020, the most recent year of reporting available. BNIA collects data from city and state agencies as well as private companies and geographically aggregates the data into CSA units.
+
+**Hypothesis testing**. Without a formal hypothesis, a correlation matrix was conducted to explore relationships between vacant and abandoned homes and other variables, and further analyses were conducted for a select few variables. Bivariate and multivariate linear and quadratic regression were used to explore the relationships between the community characteristics and vacant homes. Analyses were conducted in R with the lmtest and sandwich packages. The tables in the Findings section include multiple variations of these hypothesis tests with R2 and adjusted R2 values, robust standard error values, and p-values.
+
+**Data transformation**. The original dataset included 55 community statistical areas as well as one row for citywide values. The Baltimore City row was excluded for the regression analysis. Independent and control variable selection was aided by analyzing a correlation matrix on a wider dataset to avoid multicollinearity. Outlier detection was also performed on variables using boxplots and the chi-squared test for outliers, from the outliers R package. The Part 1 crime variable contained an outlier which was excluded from the analysis (see *Figure 3*). One row, Canton, had a missing value for high school completion rate. Since its distribution was slightly positively skewed (see *Figure 4*), the column median was imputed for this missing value.
+
+```{r echo=F, fig.width=3,fig.height=5}
+
+# chisq.out.test(communities_num2$part1_crime, variance=var(communities_num2$part1_crime))
+### Downtown/Seton Hill is the outlier for part1_crime // 3rd quartile for vacants
+# 	chi-squared test for outlier
+## data:  communities_num2$part1_crime
+## X-squared = 13.191, p-value = 0.0002813
+## alternative hypothesis: highest value 134.6 is an outlier
+
+boxplot(communities_num2$part1_crime, 
+        main="Boxplot of part1_crime")
+
+```
+
+*Figure 3*. The data for Part 1 crime included an outlier at 134.6 crimes per 1,000 residents in the Downtown/Seton Hill community statistical area. A chi-squared outlier test confirmed that this was an outlier at the 0.001 significance level. The Downtown/Seton Hill crime rate was excluded from analysis.
+
+``` {r echo=F, warning=F, fig.width=6,fig.height=6}
+
+communities_num2$hs_completion <- as.numeric(communities_num2$hs_completion)
+
+hist(communities_num2$hs_completion, 
+     main="Histogram of HS Completion Rates in Baltimore City", 
+     xlab="High School Completion Rate")
+
+```
+
+*Figure 4*. The distribution of high school completion rates was slightly positively skewed, so the missing value was imputed as the median, rather than the mean.
+
+```{r echo=F}
+
+communities_num2$hs_completion[is.na(communities_num2$hs_completion)] <- median(communities_num2$hs_completion, na.rm=T)
+communities_num2$homestead_taxcredits[is.na(communities_num2$homestead_taxcredits)] <- median(communities_num2$homestead_taxcredits, na.rm=T)
+
+```
+
+Tables for this report were generated with the stargazer package for R. Other figures were generated with base R and ggplot2, and the map was generated with rgdal, geojsonio, and broom packages.
+
+### Findings
+**Part 1 crime**. The mean value for Part 1 crime was 49.6 across CSAs, which included an outlier in Downtown/Seton Hill at 134.6 Part 1 crimes per 1,000 residents (see *Figure 3*); the median was 45.4, and the city-wide figure was 47.2. The minimum value was 13.4 crimes per 1,000 residents in Cross-Country/Cheswolde, and the maximum (excluding the outlier) was 104.3 in Washington Village/Pigtown.
+
+A linear regression revealed a positive relationship between Part 1 crime and the percentage of vacant and abandoned homes (see *Table 2*). As Part 1 crime increases by one crime per 1,000 residents, the percentage of vacant homes increases by about 0.2 percent, when controlling for socioeconomic factors. In the bivariate model and multivariate model with just education level and income as controls, this effect was significant at the 1% level. In the multivariate model with additional controls (high school completion rate and unemployment rate), the effect was significant at the 10% level. The Part 1 crime rate accounted for 56% of the variance in vacant homes when including 4 socioeconomic control variables.
+
+```{r echo=F, warning=F}
+
+crime_vacants_outlier_removed <- subset(communities_num2,
+                                        part1_crime < 134.6)
+
+bivariate_crime_outlier <- lm(vacant_abandoned ~ part1_crime,
+                      data=crime_vacants_outlier_removed)
+bivariate_crime_outlier$rse <- sqrt(diag(vcovHC(bivariate_crime_outlier, type="HC1")))
+
+multivariate1_crime_outlier <- lm(vacant_abandoned ~ 
+                            part1_crime +
+                            bachelors_degree +
+                            income,
+                          data=crime_vacants_outlier_removed)
+multivariate1_crime_outlier$rse <- sqrt(diag(vcovHC(multivariate1_crime_outlier, type="HC1")))
+
+multivariate1_crime_outlier <- lm(vacant_abandoned ~ 
+                            part1_crime +
+                            bachelors_degree +
+                            hs_completion +
+                            unemployment +
+                            income,
+                          data=crime_vacants_outlier_removed)
+multivariate1_crime_outlier$rse <- sqrt(diag(vcovHC(multivariate1_crime_outlier, type="HC1")))
+
+multivariate2_crime_outlier <- lm(vacant_abandoned ~ 
+                                    part1_crime +
+                                    bachelors_degree +
+                                    income,
+                                  data=crime_vacants_outlier_removed)
+multivariate2_crime_outlier$rse <- sqrt(diag(vcovHC(multivariate2_crime_outlier, type="HC1")))
+
+stargazer(bivariate_crime_outlier, 
+          multivariate2_crime_outlier,
+          multivariate1_crime_outlier, 
+          se=list(bivariate_crime_outlier$rse, 
+                  multivariate2_crime_outlier$rse,
+                  multivariate1_crime_outlier$rse),
+          type='text',
+          title = 'Table 2: Linear Regression, Part 1 Crime & Vacant Homes',
+          column.labels = c('Bivariate', 'Multivariate', 'Multivariate'),
+          model.numbers = F,
+          omit.stat = c('f'),
+          digits=3)
+```
+
+*Table 2*. Three linear regression models were conducted to explore the relationship between Part 1 crime and vacant homes. All three models found the Part 1 crime rate to be a statistically significant predictor of vacant homes. The model with the most control variables accounted for 56% of the variation in vacant homes.
+
+``` {r echo=F, warning=F, fig.width=7,fig.height=5}
+
+ggplot(crime_vacants_outlier_removed, aes(part1_crime, vacant_abandoned, 
+                             size=vacants_ownedby_city)) +
+  geom_point(alpha=0.5)+
+  scale_size(range = c(1, 20), name="% Vacants Owned by City")+
+  labs(title="Part 1 Crime and Vacant Homes",
+       x="Part 1 Crimes per 1,000 Residents",
+       y="% Vacant and Abandoned Homes")+
+  ylim(-0.5,35)+
+  xlim(4,116)+
+  theme_bw()+
+  geom_smooth(method="loess", formula=y~x, se=F, color='red', show.legend=F)+
+  geom_smooth(method = lm, formula=y~x, se=F, color='blue', show.legend=F)+
+  guides()
+
+```
+
+*Figure 5*. A scatterplot of the relationship between Part 1 crime and vacant homes reveals that a polynomial regression might better represent the relationship. The blue line represents the bivariate linear regression, and the red line represents the line of best fit. The sizes of each point correspond to the relative percentage of vacants that are owned by the city: CSAs with larger points have a larger proportion of vacant homes owned by the city.
+
+**Vacants owned by Baltimore City**. The percentage of vacant homes owned by the city ranged from 0 to 35.4, with a median of just 1.8%. The plot in *Figure 5* revealed patterns in the percentage of vacants owned by the city. Vacant homes in CSAs with lower rates of vacants and lower Part 1 crime rates were less likely to be owned by the city of Baltimore.
+
+**Residential sales made in cash**. The percentage of residential sales made in cash ranged from 7.4 in South Baltimore to a whopping 87.7% in Sandtown-Winchester/Harlem Park. The distribution for this variable was positively skewed but did not contain outliers (see *Figure 6*).
+
+Bivariate and multivariate linear regressions on cash home sales and vacant homes yielded quite similar results to one another (see *Table 3*). The coefficient on each was close to 0.3 percent, statistically significant at the 1% level. Including additional variables improved the R2 value only slightly, with the best model explaining 67% of the variance in vacant homes. These models suggest that for every 1 percent increase in residential sales in cash, vacant homes will increase by about 0.3 percent. Plotting the relationship suggested that linear regression is a good fit for the relationship (see *Figure 7*).
+
+```{r echo=F, fig.width=3,fig.height=5}
+
+boxplot(communities_final$cash_homesales, 
+        main="Boxplot of cash_homesales")
+```
+
+*Figure 6*. The boxplot shows the distribution of cash home sales. Residential sales made in cash varied widely across Baltimore CSAs but skewed positive, with the median value 28.4% and mean value 35.0%.
+
+```{r echo=F}
+
+bivariate_cashsales <- lm(vacant_abandoned ~ cash_homesales,
+                            data=communities_num2)
+bivariate_cashsales$rse <- sqrt(diag(vcovHC(bivariate_cashsales, type="HC1")))
+
+multi_cashsales <- lm(vacant_abandoned ~ cash_homesales +
+                          bachelors_degree +
+                          hs_completion +
+                          unemployment +
+                          income,
+                            data=communities_num2)
+multi_cashsales$rse <- sqrt(diag(vcovHC(multi_cashsales, type="HC1")))
+
+multi_cashsales2 <- lm(vacant_abandoned ~ cash_homesales +
+                          bachelors_degree +
+                          income,
+                        data=communities_num2)
+multi_cashsales2$rse <- sqrt(diag(vcovHC(multi_cashsales2, type="HC1")))
+
+stargazer(bivariate_cashsales, 
+          multi_cashsales2,
+          multi_cashsales, 
+          se=list(bivariate_cashsales$rse, 
+                  multi_cashsales2$rse,
+                  multi_cashsales$rse),
+          type='text',
+          title = 'Table 3: Linear Regression, Cash Sales & Vacant Homes',
+          column.labels = c('Bivariate', 'Multivariate', 'Multivariate'),
+          model.numbers = F,
+          omit.stat = c('f'),
+          digits=3)
+```
+
+*Table 3*. Three linear regression models were conducted to explore the relationship between residential sales in cash and vacant homes. All three models found the cash sales to be a statistically significant predictor of vacant homes. The model with the most control variables accounted for 67% of the variance in vacant homes.
+
+``` {r echo=F, warning=F, fig.width=6,fig.height=6}
+
+ggplot(communities_num2, aes(cash_homesales, vacant_abandoned)) +
+  geom_point(alpha=0.5, size=3)+
+  scale_size(range = c(1, 20), name="% Vacants Owned by City")+
+  labs(title="Cash Residential Sales and Vacant Homes",
+       x="% Residential Sales for Cash",
+       y="% Vacant and Abandoned Homes")+
+  ylim(0,35)+
+  xlim(0,95)+
+  theme_bw()+
+  geom_smooth(method="loess", formula=y~x, se=F, color='red', show.legend=F)+
+  geom_smooth(method = lm, formula=y~x, se=F, color='blue', show.legend=F)+
+  guides()
+
+```
+
+*Figure 7*. A scatterplot of the relationship between cash residential sales and vacant homes suggests that a bivariate linear regression (blue line) fits the relationship about as well as the line of best fit (red line).
+
+**Owner-occupied homes**. The percent of housing units that were owner occupied was highly variable across CSAs but almost evenly distributed between 20 and 80 percent (see *Figure 8*), with none under 20% and only two over 80% owner occupied in Cross-Country/Cheswolde (80.9%) and Claremont/Armistead (82.4%). The average value was 52.6% owner-occupied homes (see *Table 1*).
+
+```{r echo=F, fig.width=6,fig.height=6}
+
+hist(communities_final$owner_occupied,
+     main='Histogram: Percent Owner Occupied Homes',
+     xlab='Percent of housing units that are owner occupied')
+
+```
+
+*Figure 8*. The percent of homes occupied by the owners had high variability and was quite evenly distributed between 20 and 80 percent, but only 2 CSAs had more than 80% owner-occupied homes.
+
+``` {r include=F}
+
+bivariate_renters <- lm(vacant_abandoned ~ owner_occupied,
+                          data=communities_num2)
+bivariate_renters$rse <- sqrt(diag(vcovHC(bivariate_renters, type="HC1")))
+
+quadratic_renters <- lm(vacant_abandoned ~ owner_occupied + I(owner_occupied^2),
+                        data=communities_num2)
+
+multi_renters <- lm(vacant_abandoned ~ owner_occupied + I(owner_occupied^2) +
+                        bachelors_degree +
+                        hs_completion +
+                        unemployment +
+                        income,
+                      data=communities_num2)
+multi_renters$rse <- sqrt(diag(vcovHC(multi_renters, type="HC1")))
+
+multi_renters2 <- lm(vacant_abandoned ~ owner_occupied + I(owner_occupied^2) +
+                         bachelors_degree +
+                         income,
+                       data=communities_num2)
+multi_renters2$rse <- sqrt(diag(vcovHC(multi_renters2, type="HC1")))
+
+```
+
+```{r echo=F, fig.width=6,fig.height=6}
+
+ggplot(communities_num2, aes(owner_occupied, vacant_abandoned)) +
+  geom_point(alpha=0.5, size=3)+
+  scale_size(range = c(1, 20), name="% Vacants Owned by City")+
+  labs(title="Owners/Renters and Vacant Homes",
+       x="% Homes that are Owner-Occupied",
+       y="% Vacant and Abandoned Homes")+
+  theme_bw()+
+  geom_smooth(method="loess", formula=y~x, se=F, color='red', show.legend=F)+
+  geom_smooth(method = lm, formula=y~x, se=F, color='blue', show.legend=F)+
+  guides()
+
+```
+
+*Figure 9*. A scatterplot of the relationship between owner-occupied homes and vacant homes suggests that a quadratic regression fits the relationship better than a bivariate linear regression (blue line). The red line shows the line of best fit and its bowed shape corresponds to a quadratic regression model.
+
+After an initial linear bivariate regression analysis, which suggested that the rate of owner-occupied homes is a statistically significant predictor of vacant homes, this relationship plotted in *Figure 9* revealed that a quadratic regression was a better fit for the data. The quadratic models with varying numbers of controls showed a stronger relationship between owner-occupied homes and vacants than the other variables explored in this study. The strongest model (rightmost column in *Table 4*) explains over 80% of the variance in vacant homes.
+
+```{r echo=F}
+
+stargazer(bivariate_renters, 
+          quadratic_renters,
+          multi_renters2,
+          multi_renters,
+          se=list(bivariate_renters$rse, 
+                  quadratic_renters$rse,
+                  multi_renters2$rse,
+                  multi_renters$rse),
+          type='text',
+          title = 'Table 4: Regression, Owner-Occupied Homes & Vacant Homes',
+          column.labels = c('Linear-Bivariate', 'Quadratic-Bivariate', 
+                            'Quadratic-Multi', 'Quadratic-Multi'),
+          model.numbers = F,
+          omit.stat = c('f'),
+          digits=3)
+
+```
+
+*Table 4*. Four regression models were conducted to explore the relationship between owner-occupied homes and vacant homes. All four models found owner-occupied homes to be a statistically significant predictor of vacant homes, with a negative relationship. The quadratic models performed better than the linear model, accounting for more than 75% of the variance.
+
+### Discussion
+
+This study explored potential predictors of vacant homes in Baltimore City, Maryland. The Part 1 crime rate per 1,000 residents was a statistically significant predictor of vacant homes. This relationship, more than others explored, suffers from a chicken-and-egg problem. Does high crime create an environment where folks leave the community and homes are left in disrepair? Or, are areas with more vacant homes more hospitable to crime?
+
+Conversely, BNIA’s own definition of residential sales in cash purports that cash sales are likely made for investment purposes. Indeed, cash home sales were a significant predictor of vacant homes, consistent with recent journalism shedding light on investment companies that buy up homes only to be left derelict. 
+
+It also seems plausible that communities with more homes being rented, compared to those that the owners live in, would be more likely to have vacant and abandoned homes. Communities with more renters might have fewer resources, not to mention a sense of belonging, that can lead to community improvements. Owner-occupied homes turned out to be the best predictor of vacant homes of all the variables explored.
+
+With a stronger understanding of what factors may lead to higher prevalence of vacant homes in Baltimore, the next step is to understand the outcomes associated with vacant homes. Furthermore, research should be done to evaluate the role of the city government in tackling this issue. What factors lead to the city acquiring ownership of vacant homes, and what are the ultimate outcomes for those homes? Are they rehabilitated and reoccupied, or are they sold at auction to predatory investment companies? Understanding the implications of vacant homes can lead city officials to take responsibility for their role in the problem.
+
+
+### References
+
+About Us. *RBI*. (n.d.). Retrieved December 12, 2022, from [http://www.rbintel.com/about-us](http://www.rbintel.com/about-us)
+
+Baltimore Neighborhood Indicators Alliance – Jacob France Institute (BNIA-JFI). (2022). *Vital Signs 20*. Retrieved from [www.bniajfi.org](www.bniajfi.org) 
+
+Condon, C., & Opilo, E. (2022, January 29). Baltimore’s blighted vacant homes, like the one where 3 firefighters were killed, take perpetual toll on City. *Baltimore Sun*. Retrieved December 13, 2022, from [https://www.baltimoresun.com/maryland/baltimore-city/bs-md-ci-vacant-homes-stricker-street-fatal-fire-20220128-mchovna5trfbrdsy5yuuixtoz4-story.html](https://www.baltimoresun.com/maryland/baltimore-city/bs-md-ci-vacant-homes-stricker-street-fatal-fire-20220128-mchovna5trfbrdsy5yuuixtoz4-story.html) 
+
+Fenton, J. (2022, November 2). When opportunity flips: Why a firm promising profits from vacants faces so many lawsuits. *The Baltimore Banner*. Retrieved November 8, 2022, from [https://www.thebaltimorebanner.com/economy/real-estate/abc-capital-baltimore-vacant-homes-real-estate-flip-investment-lawsuits-MQNE46IUZRFIVCLLO7H4PWSPQ4/](https://www.thebaltimorebanner.com/economy/real-estate/abc-capital-baltimore-vacant-homes-real-estate-flip-investment-lawsuits-MQNE46IUZRFIVCLLO7H4PWSPQ4/) 
+
+Hlavac, M. (2022). stargazer: Well-Formatted Regression and Summary Statistics Tables. R package version 5.2.3. [https://CRAN.R-project.org/package=stargazer](https://CRAN.R-project.org/package=stargazer) 
+
+Huisache, S. M. (2022, September 12). How many vacant homes are in America? (2022 data). *Anytime Estimate*. Retrieved December 12, 2022, from [https://anytimeestimate.com/research/most-vacant-cities-2022/](https://anytimeestimate.com/research/most-vacant-cities-2022/) 
+
+Miller, H., & Kasakove, S. (2022, September 2). Vacant properties cost Baltimore at least $200 million a year, report estimates. *The Baltimore Banner*. Retrieved November 8, 2022, from [https://www.thebaltimorebanner.com/community/housing/vacant-properties-cost-baltimore-at-least-200-million-a-year-report-estimates-6AEJAGIWZBA5NDURLXV5ZM4YSE/](https://www.thebaltimorebanner.com/community/housing/vacant-properties-cost-baltimore-at-least-200-million-a-year-report-estimates-6AEJAGIWZBA5NDURLXV5ZM4YSE/) 
+
+Property Map Products. *Maryland Department of Planning*. (n.d.). Retrieved December 12, 2022, from [https://planning.maryland.gov/Pages/OurProducts/PropertyMapProducts/MDPropertyViewProducts.aspx](https://planning.maryland.gov/Pages/OurProducts/PropertyMapProducts/MDPropertyViewProducts.aspx)
